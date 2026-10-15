@@ -1,0 +1,403 @@
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { dt, SeverityBadge, StatusBadge } from "@/components/badges";
+import { StateForm, SubmitButton } from "@/components/forms";
+import {
+  acknowledgeIncident,
+  addComment,
+  confirmComplete,
+  reassignManager,
+  saveAction,
+} from "@/lib/actions/incidents";
+import { requireUser } from "@/lib/auth";
+import { db } from "@/lib/db";
+import { EVENT_LABEL, getAttachments, getComments, getEvents, getIncidentFor } from "@/lib/incidents";
+import { formatSize } from "@/lib/report";
+import { ROLE_LABEL, type Attachment, type Incident, type User } from "@/lib/types";
+
+const STEPS = [
+  { key: "created_at", label: "장애 접수" },
+  { key: "acknowledged_at", label: "담당자 확인" },
+  { key: "action_at", label: "원인분석·조치" },
+  { key: "closed_at", label: "처리완료" },
+] as const;
+
+function Stepper({ incident }: { incident: Incident }) {
+  return (
+    <ol className="grid grid-cols-4">
+      {STEPS.map((s, idx) => {
+        const at = incident[s.key];
+        return (
+          <li key={s.key} className="relative flex flex-col items-center text-center">
+            {idx > 0 && (
+              <span className={`absolute top-3.5 right-1/2 -z-0 h-0.5 w-full ${at ? "bg-blue-500" : "bg-slate-200"}`} />
+            )}
+            <span
+              className={`relative z-10 grid size-7 place-items-center rounded-full text-xs font-bold ${
+                at ? "bg-blue-600 text-white" : "border-2 border-slate-200 bg-white text-slate-400"
+              }`}
+            >
+              {at ? "✓" : idx + 1}
+            </span>
+            <span className={`mt-1.5 text-xs font-medium ${at ? "text-slate-800" : "text-slate-400"}`}>{s.label}</span>
+            <span className="text-[11px] text-slate-400">{at ? dt(at) : ""}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** 지금 이 사용자가 해야 할 일 안내 */
+function nextStep(user: User, i: Incident): { text: string; tone: "info" | "todo" | "done" } {
+  const isMgr = user.role === "manager";
+  const isCus = user.role === "customer";
+  switch (i.status) {
+    case "received":
+      if (!i.manager_id) return { text: "담당자가 배정되지 않았습니다. 관리자가 담당자를 배정해야 합니다.", tone: "todo" };
+      return isMgr
+        ? { text: "새로 접수된 장애입니다. '접수 확인'을 누르고 원인 분석을 시작하세요.", tone: "todo" }
+        : { text: `담당자(${i.manager_name})의 확인을 기다리고 있습니다.`, tone: "info" };
+    case "in_progress":
+      return isMgr
+        ? { text: "원인 분석이 끝나면 아래에 원인과 조치 내역을 등록하세요. 등록하면 고객에게 알림이 갑니다.", tone: "todo" }
+        : { text: "담당자가 원인을 분석하고 조치 중입니다.", tone: "info" };
+    case "resolved": {
+      const mine = isCus ? i.customer_confirmed_at : isMgr ? i.manager_confirmed_at : null;
+      if ((isCus || isMgr) && !mine)
+        return {
+          text: isCus
+            ? "담당자가 조치 내역을 등록했습니다. 내용을 확인하고 문제가 해결되었으면 '처리완료'를 눌러주세요. 추가 문의는 댓글로 남겨주세요."
+            : "고객 확인을 받고 '처리완료'를 눌러주세요. 고객과 담당자가 모두 누르면 보고서가 자동 생성됩니다.",
+          tone: "todo",
+        };
+      return { text: "상대방의 처리완료 확인을 기다리고 있습니다.", tone: "info" };
+    }
+    case "closed":
+      return { text: "처리완료되어 장애 이력에 저장되었습니다. 보고서를 다운로드할 수 있습니다.", tone: "done" };
+  }
+}
+
+function Files({ files }: { files: Attachment[] }) {
+  if (files.length === 0) return null;
+  return (
+    <ul className="mt-3 flex flex-wrap gap-2">
+      {files.map((f) => (
+        <li key={f.id}>
+          <a
+            href={`/api/files/${f.id}`}
+            target="_blank"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-700 hover:border-blue-300 hover:text-blue-700"
+          >
+            📎 {f.original_name} <span className="text-slate-400">({formatSize(f.size)})</span>
+          </a>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function Info({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex justify-between gap-4 py-1.5 text-sm">
+      <dt className="shrink-0 text-slate-500">{label}</dt>
+      <dd className="text-right text-slate-800">{children}</dd>
+    </div>
+  );
+}
+
+const fileInputClass =
+  "block w-full text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs hover:file:bg-slate-200";
+
+export default async function IncidentPage({ params }: PageProps<"/incidents/[id]">) {
+  const user = await requireUser();
+  const { id } = await params;
+  const incident = getIncidentFor(user, Number(id));
+  if (!incident) notFound();
+
+  const comments = getComments(incident.id);
+  const attachments = getAttachments(incident.id);
+  const events = getEvents(incident.id);
+  const closed = incident.status === "closed";
+  const isHandler = user.role === "admin" || (user.role === "manager" && incident.manager_id === user.id);
+  const step = nextStep(user, incident);
+  const managers =
+    user.role === "admin"
+      ? (db.prepare("SELECT id, name FROM users WHERE role = 'manager' AND active = 1 ORDER BY name").all() as {
+          id: number;
+          name: string;
+        }[])
+      : [];
+
+  return (
+    <div className="space-y-5">
+      {/* 헤더 */}
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <Link href="/" className="text-xs text-slate-500 hover:text-blue-600">
+            ← 목록으로
+          </Link>
+          <div className="mt-1 flex flex-wrap items-center gap-2">
+            <span className="font-mono text-sm text-slate-500">{incident.code}</span>
+            <SeverityBadge severity={incident.severity} />
+            <StatusBadge status={incident.status} />
+          </div>
+          <h1 className="mt-1 text-2xl font-bold text-slate-900">{incident.title}</h1>
+        </div>
+        {closed && (
+          <a href={`/api/incidents/${incident.id}/report`} className="btn-primary">
+            ⬇ 보고서 다운로드 (PDF)
+          </a>
+        )}
+      </div>
+
+      <div className="card px-6 py-5">
+        <Stepper incident={incident} />
+      </div>
+
+      <div
+        className={`rounded-xl border px-5 py-3 text-sm ${
+          step.tone === "todo"
+            ? "border-amber-200 bg-amber-50 text-amber-800"
+            : step.tone === "done"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : "border-blue-100 bg-blue-50 text-blue-800"
+        }`}
+      >
+        <strong className="mr-2">{step.tone === "todo" ? "해야 할 일" : "진행 상황"}</strong>
+        {step.text}
+      </div>
+
+      <div className="grid gap-5 lg:grid-cols-3">
+        {/* 왼쪽: 내용·조치·댓글 */}
+        <div className="space-y-5 lg:col-span-2">
+          <section className="card">
+            <h2 className="card-title">장애 내용</h2>
+            <div className="px-5 py-4">
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{incident.description}</p>
+              <Files files={attachments.filter((a) => !a.comment_id && a.uploaded_by === incident.customer_id)} />
+            </div>
+          </section>
+
+          <section className="card">
+            <h2 className="card-title flex items-center justify-between">
+              원인 분석 · 조치 내역
+              {incident.action_at && <span className="text-xs font-normal text-slate-400">등록 {dt(incident.action_at)}</span>}
+            </h2>
+            <div className="space-y-4 px-5 py-4">
+              {isHandler && !closed ? (
+                <>
+                  {incident.status === "received" && (
+                    <form action={acknowledgeIncident} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 p-3">
+                      <input type="hidden" name="id" value={incident.id} />
+                      <p className="text-sm text-slate-600">접수를 확인하면 고객에게 처리 시작 알림이 전송됩니다.</p>
+                      <SubmitButton className="btn-secondary shrink-0">접수 확인</SubmitButton>
+                    </form>
+                  )}
+                  <StateForm key={incident.updated_at} action={saveAction} className="space-y-3">
+                    <input type="hidden" name="id" value={incident.id} />
+                    <div>
+                      <label className="label" htmlFor="cause">
+                        장애 원인 *
+                      </label>
+                      <textarea
+                        id="cause"
+                        name="cause"
+                        className="input min-h-24"
+                        required
+                        defaultValue={incident.cause ?? ""}
+                        placeholder="분석된 장애 원인을 입력하세요."
+                      />
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="action">
+                        조치 내역 *
+                      </label>
+                      <textarea
+                        id="action"
+                        name="action"
+                        className="input min-h-28"
+                        required
+                        defaultValue={incident.action_taken ?? ""}
+                        placeholder="수행한 조치와 재발 방지 대책을 입력하세요."
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <input name="files" type="file" multiple className={`${fileInputClass} max-w-xs`} />
+                      <SubmitButton
+                        confirm={
+                          incident.customer_confirmed_at || incident.manager_confirmed_at
+                            ? "조치내역을 수정하면 처리완료 확인이 초기화됩니다. 계속할까요?"
+                            : undefined
+                        }
+                      >
+                        {incident.action_at ? "조치내역 수정 · 고객 알림" : "조치내역 등록 · 고객 알림"}
+                      </SubmitButton>
+                    </div>
+                  </StateForm>
+                </>
+              ) : incident.action_at ? (
+                <>
+                  <div>
+                    <h3 className="mb-1 text-xs font-semibold text-slate-500">장애 원인</h3>
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{incident.cause}</p>
+                  </div>
+                  <div>
+                    <h3 className="mb-1 text-xs font-semibold text-slate-500">조치 내역</h3>
+                    <p className="text-sm leading-relaxed whitespace-pre-wrap">{incident.action_taken}</p>
+                  </div>
+                </>
+              ) : (
+                <p className="py-4 text-center text-sm text-slate-400">아직 등록된 조치 내역이 없습니다.</p>
+              )}
+              <Files files={attachments.filter((a) => !a.comment_id && a.uploaded_by !== incident.customer_id)} />
+            </div>
+          </section>
+
+          <section className="card">
+            <h2 className="card-title">대화 ({comments.length})</h2>
+            <ul className="divide-y divide-slate-100">
+              {comments.length === 0 && (
+                <li className="px-5 py-8 text-center text-sm text-slate-400">
+                  고객과 담당자가 주고받는 문의·답변이 여기에 기록되며, 처리완료 시 보고서에 포함됩니다.
+                </li>
+              )}
+              {comments.map((c) => (
+                <li key={c.id} className={`px-5 py-4 ${c.user_id === user.id ? "bg-blue-50/40" : ""}`}>
+                  <div className="flex items-center gap-2 text-sm">
+                    <span
+                      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                        c.user_role === "customer"
+                          ? "bg-emerald-100 text-emerald-700"
+                          : c.user_role === "manager"
+                            ? "bg-blue-100 text-blue-700"
+                            : "bg-slate-200 text-slate-700"
+                      }`}
+                    >
+                      {ROLE_LABEL[c.user_role]}
+                    </span>
+                    <span className="font-medium">{c.user_name}</span>
+                    <span className="text-xs text-slate-400">{dt(c.created_at)}</span>
+                  </div>
+                  <p className="mt-1.5 text-sm leading-relaxed whitespace-pre-wrap">{c.body}</p>
+                  <Files files={attachments.filter((a) => a.comment_id === c.id)} />
+                </li>
+              ))}
+            </ul>
+            {!closed && (
+              <StateForm action={addComment} resetOnSuccess className="border-t border-slate-100 px-5 py-4">
+                <input type="hidden" name="id" value={incident.id} />
+                <textarea
+                  name="body"
+                  className="input min-h-20"
+                  required
+                  placeholder={user.role === "customer" ? "담당자에게 문의·추가 정보를 남기세요." : "고객에게 안내·질문을 남기세요."}
+                />
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+                  <input name="files" type="file" multiple className={`${fileInputClass} max-w-xs`} />
+                  <SubmitButton className="btn-secondary">댓글 등록</SubmitButton>
+                </div>
+              </StateForm>
+            )}
+          </section>
+        </div>
+
+        {/* 오른쪽: 정보·처리완료·경과 */}
+        <aside className="space-y-5">
+          <section className="card">
+            <h2 className="card-title">처리완료 확인</h2>
+            <div className="space-y-3 px-5 py-4">
+              {[
+                { label: "고객", name: incident.customer_name, at: incident.customer_confirmed_at },
+                { label: "담당자", name: incident.manager_name ?? "미배정", at: incident.manager_confirmed_at },
+              ].map((p) => (
+                <div key={p.label} className="flex items-center justify-between rounded-lg border border-slate-200 px-3 py-2">
+                  <div>
+                    <p className="text-xs text-slate-500">{p.label}</p>
+                    <p className="text-sm font-medium">{p.name}</p>
+                  </div>
+                  {p.at ? (
+                    <span className="text-right text-xs text-emerald-700">
+                      ✓ 확인
+                      <br />
+                      <span className="text-slate-400">{dt(p.at)}</span>
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">미확인</span>
+                  )}
+                </div>
+              ))}
+
+              {incident.status === "resolved" &&
+                ((user.role === "customer" && !incident.customer_confirmed_at) ||
+                  (user.role === "manager" && incident.manager_id === user.id && !incident.manager_confirmed_at)) && (
+                  <form action={confirmComplete}>
+                    <input type="hidden" name="id" value={incident.id} />
+                    <SubmitButton
+                      className="btn-success w-full py-2.5"
+                      confirm="처리완료를 확인하시겠습니까? 양쪽 모두 확인하면 종결되고 보고서가 생성됩니다."
+                    >
+                      ✓ 처리완료
+                    </SubmitButton>
+                  </form>
+                )}
+              {incident.status !== "resolved" && !closed && (
+                <p className="text-xs text-slate-400">담당자가 조치 내역을 등록하면 처리완료를 누를 수 있습니다.</p>
+              )}
+              {closed && (
+                <a href={`/api/incidents/${incident.id}/report`} className="btn-primary w-full">
+                  ⬇ 보고서 다운로드 (PDF)
+                </a>
+              )}
+            </div>
+          </section>
+
+          <section className="card">
+            <h2 className="card-title">접수 정보</h2>
+            <dl className="divide-y divide-slate-50 px-5 py-2">
+              <Info label="고객사">{incident.company_name}</Info>
+              <Info label="접수자">{incident.customer_name}</Info>
+              <Info label="담당자">{incident.manager_name ?? <span className="text-red-500">미배정</span>}</Info>
+              <Info label="장애 유형">{incident.category}</Info>
+              <Info label="대상 시스템">{incident.target_system ?? "-"}</Info>
+              <Info label="발생일시">{dt(incident.occurred_at)}</Info>
+              <Info label="접수일시">{dt(incident.created_at)}</Info>
+            </dl>
+            {user.role === "admin" && !closed && (
+              <form action={reassignManager} className="flex gap-2 border-t border-slate-100 px-5 py-3">
+                <input type="hidden" name="id" value={incident.id} />
+                <select name="manager_id" className="input py-1.5" defaultValue={incident.manager_id ?? ""}>
+                  <option value="" disabled>
+                    담당자 선택
+                  </option>
+                  {managers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
+                    </option>
+                  ))}
+                </select>
+                <SubmitButton className="btn-secondary btn-sm shrink-0">배정</SubmitButton>
+              </form>
+            )}
+          </section>
+
+          <section className="card">
+            <h2 className="card-title">처리 경과</h2>
+            <ol className="space-y-3 px-5 py-4">
+              {events.map((e) => (
+                <li key={e.id} className="relative border-l-2 border-slate-200 pl-4">
+                  <span className="absolute top-1.5 -left-[5px] size-2 rounded-full bg-blue-500" />
+                  <p className="text-sm font-medium">{EVENT_LABEL[e.type] ?? e.type}</p>
+                  <p className="text-xs text-slate-500">
+                    {dt(e.created_at)} · {e.user_name ?? "시스템"}
+                  </p>
+                  {e.detail && <p className="text-xs text-slate-400">{e.detail}</p>}
+                </li>
+              ))}
+            </ol>
+          </section>
+        </aside>
+      </div>
+    </div>
+  );
+}
