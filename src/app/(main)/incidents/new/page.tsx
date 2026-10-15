@@ -2,27 +2,19 @@ import AttachmentInput from "@/components/AttachmentInput";
 import { StateForm, SubmitButton } from "@/components/forms";
 import { createIncident } from "@/lib/actions/incidents";
 import { requireUser } from "@/lib/auth";
-import { admin } from "@/lib/supabase/server";
+import { companyManagers } from "@/lib/incidents";
 import { CATEGORIES, SEVERITIES } from "@/lib/types";
 
 export default async function NewIncidentPage() {
   const user = await requireUser("customer");
-  const company = user.company_id
-    ? (
-        await admin()
-          .from("companies")
-          .select("name, manager:profiles!companies_manager_id_fkey(name)")
-          .eq("id", user.company_id)
-          .maybeSingle<{ name: string; manager: { name: string } | null }>()
-      ).data
-    : null;
+  const managers = user.company_id ? await companyManagers(user.company_id) : [];
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
         <h1 className="text-xl font-bold text-slate-900">장애 접수</h1>
         <p className="text-sm text-slate-500">
-          접수하면 {company?.manager ? `담당자(${company.manager.name})` : "담당자"}에게 바로 알림이 전송됩니다.
+          접수하면 {managers.length ? `담당자(${managers.map((m) => m.name).join(", ")})` : "관리자"}에게 바로 알림이 전송됩니다.
         </p>
       </div>
 
@@ -95,7 +87,18 @@ export default async function NewIncidentPage() {
         </div>
 
         <div className="flex justify-end border-t border-slate-100 pt-4">
-          <SubmitButton pendingText="접수 중…">장애 접수하기</SubmitButton>
+          <SubmitButton
+            pendingText="접수 중…"
+            confirmTitle="장애 접수"
+            confirmLabel="접수"
+            confirm={
+              managers.length
+                ? `접수하면 담당자(${managers.map((m) => m.name).join(", ")})에게 알림이 갑니다.`
+                : "접수하면 관리자에게 알림이 갑니다. (지정된 담당자가 없습니다)"
+            }
+          >
+            장애 접수하기
+          </SubmitButton>
         </div>
       </StateForm>
     </div>

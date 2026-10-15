@@ -59,7 +59,7 @@ export default function IncidentTable({ incidents, history = false }: { incident
                 </span>
               </td>
               <td className="whitespace-nowrap">{i.company_name}</td>
-              <td className="whitespace-nowrap">{i.manager_name ?? <span className="text-red-500">미배정</span>}</td>
+              <td className="whitespace-nowrap">{i.manager_name ?? <span className="text-amber-600">확인 전</span>}</td>
               <td>
                 <StatusBadge status={i.status} />
               </td>

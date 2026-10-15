@@ -38,6 +38,17 @@ export type Incident = {
   closed_at: string | null;
   created_at: string;
   updated_at: string;
+  // 누가 처리완료를 눌렀는지
+  customer_confirmed_by: string | null;
+  customer_confirmed_by_name: string | null;
+  manager_confirmed_by: string | null;
+  manager_confirmed_by_name: string | null;
+  manager_confirmed_by_role: Role | null; // 'admin'이면 관리자 대리 확인
+  closed_by: string | null;
+  closed_by_name: string | null;
+  close_type: "confirmed" | "admin" | null; // admin = 관리자 강제 종결
+  action_by: string | null; // 원인분석·조치내역 등록자
+  action_by_name: string | null;
 };
 
 export type Comment = {

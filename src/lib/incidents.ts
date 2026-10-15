@@ -2,21 +2,29 @@ import "server-only";
 import { admin, must } from "./supabase/server";
 import type { Attachment, Comment, Incident, IncidentEvent, IncidentStatus, User } from "./types";
 
-/** 역할별 조회 범위: 관리자=전체, 담당자=배정된 건, 고객=소속 고객사 건 */
-function scope(user: User): [column: string, value: string | number] | null {
-  if (user.role === "manager") return ["manager_id", user.id];
-  if (user.role === "customer") return ["company_id", user.company_id ?? -1];
+/**
+ * 역할별 조회 범위
+ * - 관리자·담당자: 전체 (지정되지 않은 고객사 건도 보고 댓글·조치내역을 남길 수 있음)
+ *   담당자가 mine=true면 자신이 지정된 고객사 건만
+ * - 고객: 소속 고객사 건만 (다른 고객사 건은 절대 볼 수 없음)
+ */
+async function scopeCompanies(user: User, mine?: boolean): Promise<number[] | null> {
+  if (user.role === "customer") return [user.company_id ?? -1];
+  if (user.role === "manager" && mine) {
+    const ids = await designatedCompanyIds(user.id);
+    return ids.length ? ids : [-1];
+  }
   return null;
 }
 
-export type IncidentFilter = { status?: string; q?: string; closed?: boolean };
+export type IncidentFilter = { status?: string; q?: string; closed?: boolean; mine?: boolean };
 
 const SEVERITY_RANK: Record<string, number> = { 긴급: 0, 높음: 1, 보통: 2, 낮음: 3 };
 
 export async function listIncidents(user: User, filter: IncidentFilter = {}): Promise<Incident[]> {
   let query = admin().from("incidents_v").select("*");
-  const sc = scope(user);
-  if (sc) query = query.eq(...sc);
+  const companies = await scopeCompanies(user, filter.mine);
+  if (companies) query = query.in("company_id", companies);
   if (filter.closed === true) query = query.eq("status", "closed");
   if (filter.closed === false) query = query.neq("status", "closed");
   if (filter.status) query = query.eq("status", filter.status);
@@ -42,10 +50,10 @@ export async function listIncidents(user: User, filter: IncidentFilter = {}): Pr
   return rows;
 }
 
-export async function countByStatus(user: User): Promise<Partial<Record<IncidentStatus, number>>> {
+export async function countByStatus(user: User, mine?: boolean): Promise<Partial<Record<IncidentStatus, number>>> {
   let query = admin().from("incidents").select("status");
-  const sc = scope(user);
-  if (sc) query = query.eq(...sc);
+  const companies = await scopeCompanies(user, mine);
+  if (companies) query = query.in("company_id", companies);
   const rows = must(await query) as { status: IncidentStatus }[];
   const counts: Partial<Record<IncidentStatus, number>> = {};
   for (const r of rows) counts[r.status] = (counts[r.status] ?? 0) + 1;
@@ -58,9 +66,53 @@ export async function getIncident(id: number): Promise<Incident | null> {
 }
 
 export function canView(user: User, incident: Incident): boolean {
+  if (user.role === "admin" || user.role === "manager") return true;
+  return user.company_id != null && incident.company_id === user.company_id;
+}
+
+// ---------------------------------------------------------------- 고객사별 지정 담당자 (1:N)
+
+export async function designatedCompanyIds(managerId: string): Promise<number[]> {
+  const rows = must(await admin().from("company_managers").select("company_id").eq("manager_id", managerId)) as {
+    company_id: number;
+  }[];
+  return rows.map((r) => r.company_id);
+}
+
+/** 고객사에 지정된 (사용 중인) 담당자 목록 */
+export async function companyManagers(companyId: number): Promise<{ id: string; name: string }[]> {
+  const rows = must(
+    await admin()
+      .from("company_managers")
+      .select("manager:profiles!inner(id, name, active)")
+      .eq("company_id", companyId),
+  ) as unknown as { manager: { id: string; name: string; active: boolean } }[];
+  return rows
+    .map((r) => r.manager)
+    .filter((m) => m.active)
+    .map(({ id, name }) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+}
+
+/** 이 장애의 접수 확인·처리완료를 할 수 있는지: 관리자, 또는 고객사 지정 담당자/배정 담당자 */
+export async function isDesignatedFor(user: User, incident: Incident): Promise<boolean> {
   if (user.role === "admin") return true;
-  if (user.role === "manager") return incident.manager_id === user.id;
-  return incident.company_id === user.company_id;
+  if (user.role !== "manager") return false;
+  if (incident.manager_id === user.id) return true;
+  const { data } = await admin()
+    .from("company_managers")
+    .select("manager_id")
+    .eq("company_id", incident.company_id)
+    .eq("manager_id", user.id)
+    .maybeSingle();
+  return Boolean(data);
+}
+
+/** 담당자 쪽 알림 대상: 고객사 지정 담당자 전원 + 배정 담당자 */
+export async function managerSideIds(incident: Incident): Promise<string[]> {
+  const ids = (await companyManagers(incident.company_id)).map((m) => m.id);
+  if (incident.manager_id && !ids.includes(incident.manager_id)) ids.push(incident.manager_id);
+  return ids;
 }
 
 /** 접근 권한까지 확인한 조회 */
@@ -109,4 +161,5 @@ export const EVENT_LABEL: Record<string, string> = {
   manager_confirmed: "담당자 처리완료 확인",
   confirm_reset: "처리완료 확인 초기화(조치내역 변경)",
   closed: "처리완료(종결)",
+  admin_closed: "관리자 강제 종결",
 };

@@ -27,6 +27,13 @@ export type ReportContent = {
     customerConfirmedAt: string;
     managerConfirmedAt: string;
     closedAt: string;
+    /** 처리완료를 누른 사람 (관리자 대리면 표시) — 이전 보고서에는 없을 수 있음 */
+    customerConfirmedBy?: string;
+    managerConfirmedBy?: string;
+    /** "고객·담당자 확인" 또는 "관리자 강제 종결 (이름)" */
+    closeMethod?: string;
+    /** 원인분석·조치내역을 등록(최종 수정)한 사람 */
+    actionBy?: string;
     description: string;
     cause: string;
     action: string;
@@ -78,8 +85,12 @@ export async function buildReport(incidentId: number): Promise<ReportContent> {
       ? `처리 과정에서 고객과 담당자 간에 총 ${comments.length}건의 의견(고객 ${customerCount}건, 담당자 ${managerCount}건${otherCount ? `, 관리자 ${otherCount}건` : ""})이 오갔습니다.`
       : "처리 과정에서 별도의 의견 교환은 없었습니다.",
   );
+  const adminClosed = i.close_type === "admin";
+  const managerProxy = i.manager_confirmed_by_role === "admin";
   sentences.push(
-    `${t(i.closed_at)}에 고객과 담당자 모두 처리완료를 확인하여 종결되었으며, 총 처리 소요시간은 ${durations.total}입니다.`,
+    adminClosed
+      ? `${t(i.closed_at)}에 관리자 ${dash(i.closed_by_name)}이(가) 처리완료(강제 종결)하였으며, 총 처리 소요시간은 ${durations.total}입니다.`
+      : `${t(i.closed_at)}에 고객과 담당자${managerProxy ? `(관리자 ${i.manager_confirmed_by_name} 대리)` : ""} 모두 처리완료를 확인하여 종결되었으며, 총 처리 소요시간은 ${durations.total}입니다.`,
   );
 
   const year = kst(i.closed_at ?? i.created_at).slice(0, 4);
@@ -102,6 +113,12 @@ export async function buildReport(incidentId: number): Promise<ReportContent> {
       customerConfirmedAt: t(i.customer_confirmed_at),
       managerConfirmedAt: t(i.manager_confirmed_at),
       closedAt: t(i.closed_at),
+      customerConfirmedBy: i.customer_confirmed_by_name ?? "-",
+      managerConfirmedBy: i.manager_confirmed_by_name
+        ? `${i.manager_confirmed_by_name}${managerProxy ? " (관리자 대리)" : ""}`
+        : "-",
+      actionBy: dash(i.action_by_name),
+      closeMethod: adminClosed ? `관리자 강제 종결 (${dash(i.closed_by_name)})` : "고객·담당자 처리완료 확인",
       description: i.description,
       cause: dash(i.cause),
       action: dash(i.action_taken),
@@ -246,6 +263,7 @@ export function renderReportPdf(r: ReportContent): Promise<Buffer> {
       ["접수자(고객)", i.customer, "담당자", i.manager],
       ["장애 발생일시", i.occurredAt, "접수일시", i.createdAt],
       ["담당자 확인일시", i.acknowledgedAt, "조치 등록일시", i.actionAt],
+      ["조치 등록자", i.actionBy ?? "-", "", ""],
       ["종결일시", i.closedAt, "총 처리시간", r.durations.total],
     ],
     { labelCols: [0, 2] },
@@ -257,10 +275,18 @@ export function renderReportPdf(r: ReportContent): Promise<Buffer> {
   section("장애 내용");
   paragraph(i.description);
 
+  const byline = () => {
+    if (!i.actionBy || i.actionBy === "-") return;
+    doc.font("R").fontSize(8.5).fillColor(COLOR.muted).text(`작성: ${i.actionBy} (담당자)  ·  ${i.actionAt}`, left, doc.y, { width });
+    doc.moveDown(0.2);
+  };
+
   section("원인 분석");
+  byline();
   paragraph(i.cause);
 
   section("조치 내역");
+  byline();
   paragraph(i.action);
 
   section("처리 경과");
@@ -297,10 +323,12 @@ export function renderReportPdf(r: ReportContent): Promise<Buffer> {
   table(
     [1, 2, 1, 2],
     [
-      ["고객", i.customer, "확인일시", i.customerConfirmedAt],
-      ["담당자", i.manager, "확인일시", i.managerConfirmedAt],
+      ["구분", "대상자", "확인자", "확인일시"],
+      ["고객", i.customer, i.customerConfirmedBy ?? "-", i.customerConfirmedAt],
+      ["담당자", i.manager, i.managerConfirmedBy ?? "-", i.managerConfirmedAt],
+      ["종결 방식", i.closeMethod ?? "고객·담당자 처리완료 확인", "종결일시", i.closedAt],
     ],
-    { labelCols: [0, 2] },
+    { header: true, labelCols: [0] },
   );
 
   // 쪽 번호

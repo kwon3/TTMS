@@ -8,33 +8,48 @@ import type { FormState } from "./auth";
 const str = (fd: FormData, key: string) => String(fd.get(key) ?? "").trim();
 const BAN_FOREVER = "876000h"; // 사용 중지 = 사실상 영구 로그인 차단
 
-async function isActiveManager(id: string | null) {
-  if (!id) return true;
-  const row = await admin().from("profiles").select("id").eq("id", id).eq("role", "manager").eq("active", true).maybeSingle();
-  return Boolean(row.data);
+/** 폼에서 선택된 담당자 중 실제로 사용 중인 담당자만 남긴다 */
+async function validManagerIds(fd: FormData): Promise<string[]> {
+  const ids = [...new Set(fd.getAll("manager_ids").map(String).filter(Boolean))];
+  if (ids.length === 0) return [];
+  const rows = must(
+    await admin().from("profiles").select("id").in("id", ids).eq("role", "manager").eq("active", true),
+  ) as { id: string }[];
+  return rows.map((r) => r.id);
 }
 
-// ------------------------------------------------------------------ 고객사
+async function replaceCompanyManagers(companyId: number, managerIds: string[]) {
+  must(await admin().from("company_managers").delete().eq("company_id", companyId));
+  if (managerIds.length > 0)
+    must(
+      await admin()
+        .from("company_managers")
+        .insert(managerIds.map((manager_id) => ({ company_id: companyId, manager_id }))),
+    );
+}
+
+// ------------------------------------------------------------------ 고객사 (담당자 여러 명 지정)
 
 export async function createCompany(_prev: FormState, fd: FormData): Promise<FormState> {
   await requireUser("admin");
   const name = str(fd, "name");
-  const managerId = str(fd, "manager_id") || null;
   if (!name) return { error: "고객사명을 입력하세요." };
-  if (!(await isActiveManager(managerId))) return { error: "올바른 담당자를 선택하세요." };
-  const { error } = await admin().from("companies").insert({ name, manager_id: managerId });
-  if (error) return { error: error.code === "23505" ? "이미 등록된 고객사명입니다." : error.message };
+  const managerIds = await validManagerIds(fd);
+  const { data, error } = await admin().from("companies").insert({ name }).select("id").single();
+  if (error || !data) return { error: error?.code === "23505" ? "이미 등록된 고객사명입니다." : error?.message };
+  await replaceCompanyManagers(data.id, managerIds);
   revalidatePath("/admin/companies");
   return { ok: `'${name}' 고객사를 등록했습니다.` };
 }
 
-export async function setCompanyManager(fd: FormData) {
+export async function setCompanyManagers(_prev: FormState, fd: FormData): Promise<FormState> {
   await requireUser("admin");
   const companyId = Number(fd.get("company_id"));
-  const managerId = str(fd, "manager_id") || null;
-  if (!(await isActiveManager(managerId))) return;
-  must(await admin().from("companies").update({ manager_id: managerId }).eq("id", companyId));
+  if (!companyId) return { error: "고객사를 찾을 수 없습니다." };
+  const managerIds = await validManagerIds(fd);
+  await replaceCompanyManagers(companyId, managerIds);
   revalidatePath("/admin/companies");
+  return { ok: `담당자 ${managerIds.length}명을 지정했습니다.` };
 }
 
 // ------------------------------------------------------------------ 사용자 계정

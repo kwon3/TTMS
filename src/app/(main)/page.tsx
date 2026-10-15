@@ -32,10 +32,13 @@ export default async function Dashboard({ searchParams }: PageProps<"/">) {
   const sp = await searchParams;
   const status = typeof sp.status === "string" && sp.status in STATUS_LABEL ? sp.status : "";
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
+  // 담당자는 기본으로 자신이 지정된 고객사 건만, "전체"를 고르면 모든 건을 본다
+  const mine = user.role === "manager" && sp.scope !== "all";
+  const scopeParam = user.role === "manager" && !mine ? "&scope=all" : "";
 
   const [counts, incidents] = await Promise.all([
-    countByStatus(user),
-    listIncidents(user, status ? { status, q } : { closed: false, q }),
+    countByStatus(user, mine),
+    listIncidents(user, status ? { status, q, mine } : { closed: false, q, mine }),
   ]);
 
   return (
@@ -47,10 +50,22 @@ export default async function Dashboard({ searchParams }: PageProps<"/">) {
             {user.role === "customer"
               ? `${user.company_name ?? ""} 장애 접수 현황입니다.`
               : user.role === "manager"
-                ? "나에게 배정된 장애 현황입니다."
+                ? mine
+                  ? "내가 지정된 고객사의 장애 현황입니다."
+                  : "모든 고객사의 장애 현황입니다. (지정되지 않은 건은 댓글·조치내역만 작성 가능)"
                 : "전체 장애 현황입니다."}
           </p>
         </div>
+        {user.role === "manager" && (
+          <div className="flex rounded-lg border border-slate-300 bg-white p-0.5 text-sm">
+            <Link href="/" className={`rounded-md px-3 py-1 ${mine ? "bg-blue-600 text-white" : "text-slate-600"}`}>
+              내 고객사
+            </Link>
+            <Link href="/?scope=all" className={`rounded-md px-3 py-1 ${!mine ? "bg-blue-600 text-white" : "text-slate-600"}`}>
+              전체
+            </Link>
+          </div>
+        )}
         {user.role === "customer" && (
           <Link href="/incidents/new" className="btn-primary">
             + 장애 접수
@@ -62,7 +77,13 @@ export default async function Dashboard({ searchParams }: PageProps<"/">) {
         {CARDS.map((c) => (
           <Link
             key={c.status}
-            href={c.status === "closed" ? "/history" : status === c.status ? "/" : `/?status=${c.status}`}
+            href={
+              c.status === "closed"
+                ? "/history"
+                : status === c.status
+                  ? `/?${scopeParam.slice(1)}`
+                  : `/?status=${c.status}${scopeParam}`
+            }
             className={`card p-4 transition hover:border-blue-300 ${status === c.status ? "ring-2 ring-blue-400" : ""}`}
           >
             <p className="text-sm text-slate-500">{STATUS_LABEL[c.status]}</p>
@@ -79,6 +100,7 @@ export default async function Dashboard({ searchParams }: PageProps<"/">) {
           </h2>
           <form className="flex gap-2">
             {status && <input type="hidden" name="status" value={status} />}
+            {scopeParam && <input type="hidden" name="scope" value="all" />}
             <input name="q" defaultValue={q} placeholder="제목·접수번호·고객사·시스템 검색" className="input w-64 py-1.5" />
             <button className="btn-secondary btn-sm">검색</button>
           </form>
