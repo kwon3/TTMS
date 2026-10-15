@@ -38,7 +38,7 @@ export default async function MainLayout({ children }: LayoutProps<"/">) {
               </Link>
             ))}
           </nav>
-          <NotificationBell />
+          <NotificationBell userId={user.id} />
           <Link href="/profile" className="hidden text-right text-xs leading-tight md:block">
             <span className="block font-medium text-slate-800">{user.name}</span>
             <span className="text-slate-500">

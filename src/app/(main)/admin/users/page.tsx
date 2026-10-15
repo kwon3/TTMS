@@ -1,31 +1,31 @@
 import { StateForm, SubmitButton } from "@/components/forms";
 import { createUser, resetPassword, toggleUserActive } from "@/lib/actions/admin";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { admin, must } from "@/lib/supabase/server";
 import { ROLE_LABEL, type Role } from "@/lib/types";
 
 type Row = {
-  id: number;
-  username: string;
+  id: string;
   name: string;
   role: Role;
-  company_name: string | null;
-  email: string | null;
+  company: { name: string } | null;
+  email: string;
   phone: string | null;
-  active: number;
-  created_at: string;
+  active: boolean;
 };
+
+const ROLE_ORDER: Record<Role, number> = { admin: 0, manager: 1, customer: 2 };
 
 export default async function UsersPage() {
   const me = await requireUser("admin");
-  const companies = db.prepare("SELECT id, name FROM companies ORDER BY name").all() as { id: number; name: string }[];
-  const users = db
-    .prepare(
-      `SELECT u.id, u.username, u.name, u.role, c.name AS company_name, u.email, u.phone, u.active, u.created_at
-         FROM users u LEFT JOIN companies c ON c.id = u.company_id
-        ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, u.name`,
-    )
-    .all() as Row[];
+  const [companyRes, userRes] = await Promise.all([
+    admin().from("companies").select("id, name").order("name"),
+    admin().from("profiles").select("id, name, role, email, phone, active, company:companies!profiles_company_fk(name)"),
+  ]);
+  const companies = must(companyRes) as { id: number; name: string }[];
+  const users = (must(userRes) as unknown as Row[]).sort(
+    (a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.name.localeCompare(b.name, "ko"),
+  );
 
   return (
     <div className="space-y-6">
@@ -57,8 +57,8 @@ export default async function UsersPage() {
             </select>
           </div>
           <div>
-            <label className="label">아이디 *</label>
-            <input name="username" className="input" required pattern="[A-Za-z0-9_.\-]{3,30}" autoComplete="off" />
+            <label className="label">이메일 (로그인 아이디) *</label>
+            <input name="email" type="email" className="input" required autoComplete="off" />
           </div>
           <div>
             <label className="label">초기 비밀번호 * (8자 이상)</label>
@@ -67,10 +67,6 @@ export default async function UsersPage() {
           <div>
             <label className="label">이름 *</label>
             <input name="name" className="input" required />
-          </div>
-          <div>
-            <label className="label">이메일</label>
-            <input name="email" type="email" className="input" />
           </div>
           <div>
             <label className="label">연락처</label>
@@ -87,7 +83,7 @@ export default async function UsersPage() {
           <thead>
             <tr>
               <th>이름</th>
-              <th>아이디</th>
+              <th>이메일 (아이디)</th>
               <th>역할</th>
               <th>고객사</th>
               <th>연락처</th>
@@ -99,13 +95,11 @@ export default async function UsersPage() {
             {users.map((u) => (
               <tr key={u.id} className={u.active ? "" : "opacity-50"}>
                 <td className="font-medium">{u.name}</td>
-                <td className="font-mono text-xs">{u.username}</td>
+                <td className="text-xs">{u.email}</td>
                 <td>{ROLE_LABEL[u.role]}</td>
-                <td>{u.company_name ?? "-"}</td>
+                <td>{u.company?.name ?? "-"}</td>
                 <td className="text-xs text-slate-500">
-                  {u.email ?? ""}
-                  {u.email && u.phone ? <br /> : null}
-                  {u.phone ?? ""}
+{u.phone ?? "-"}
                 </td>
                 <td>{u.active ? <span className="text-emerald-600">사용</span> : <span className="text-red-500">중지</span>}</td>
                 <td>

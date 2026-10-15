@@ -1,8 +1,10 @@
 import "server-only";
 import fs from "node:fs";
+import path from "node:path";
 import PDFDocument from "pdfkit";
-import { db } from "./db";
 import { EVENT_LABEL, getAttachments, getComments, getEvents, getIncident } from "./incidents";
+import { admin, must } from "./supabase/server";
+import { formatDuration, formatSize, kst } from "./time";
 import { ROLE_LABEL } from "./types";
 
 /** 처리완료 시점에 확정·저장되는 보고서 내용 */
@@ -41,41 +43,17 @@ export type ReportContent = {
   attachments: { name: string; size: string; at: string }[];
 };
 
-function parse(d: string | null): Date | null {
-  return d ? new Date(d.replace(" ", "T")) : null;
-}
-
-export function formatDuration(from: string | null, to: string | null): string {
-  const a = parse(from);
-  const b = parse(to);
-  if (!a || !b) return "-";
-  let min = Math.max(0, Math.round((b.getTime() - a.getTime()) / 60000));
-  const days = Math.floor(min / 1440);
-  min -= days * 1440;
-  const hours = Math.floor(min / 60);
-  min -= hours * 60;
-  const parts = [];
-  if (days) parts.push(`${days}일`);
-  if (hours) parts.push(`${hours}시간`);
-  parts.push(`${min}분`);
-  return parts.join(" ");
-}
-
-export function formatSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
 const dash = (v: string | null | undefined) => (v && v.trim() ? v : "-");
 
 /** 장애 건의 모든 기록(접수·조치·댓글·경과)을 템플릿에 맞춰 보고서로 정리 */
-export function buildReport(incidentId: number): ReportContent {
-  const i = getIncident(incidentId);
+export async function buildReport(incidentId: number): Promise<ReportContent> {
+  const i = await getIncident(incidentId);
   if (!i) throw new Error("장애 건을 찾을 수 없습니다.");
-  const comments = getComments(incidentId);
-  const events = getEvents(incidentId);
-  const attachments = getAttachments(incidentId);
+  const [comments, events, attachments] = await Promise.all([
+    getComments(incidentId),
+    getEvents(incidentId),
+    getAttachments(incidentId),
+  ]);
 
   const customerCount = comments.filter((c) => c.user_role === "customer").length;
   const managerCount = comments.filter((c) => c.user_role === "manager").length;
@@ -85,28 +63,29 @@ export function buildReport(incidentId: number): ReportContent {
     toAction: formatDuration(i.created_at, i.action_at),
     total: formatDuration(i.created_at, i.closed_at),
   };
+  const t = (iso: string | null) => kst(iso); // 보고서의 모든 시각은 한국 시간
 
   const sentences = [
-    `본 장애는 ${i.created_at}에 ${i.company_name}의 ${i.customer_name} 고객이 '${i.title}' 건으로 접수하였습니다` +
+    `본 장애는 ${t(i.created_at)}에 ${i.company_name}의 ${i.customer_name} 고객이 '${i.title}' 건으로 접수하였습니다` +
       (i.target_system ? ` (대상 시스템: ${i.target_system}, 긴급도: ${i.severity}).` : ` (긴급도: ${i.severity}).`),
   ];
   if (i.acknowledged_at)
-    sentences.push(`${dash(i.manager_name)} 담당자가 ${i.acknowledged_at}에 접수를 확인하였습니다(접수 후 ${durations.toAcknowledge}).`);
+    sentences.push(`${dash(i.manager_name)} 담당자가 ${t(i.acknowledged_at)}에 접수를 확인하였습니다(접수 후 ${durations.toAcknowledge}).`);
   if (i.action_at)
-    sentences.push(`담당자는 ${i.action_at}에 장애 원인분석 및 조치내역을 등록하였습니다(접수 후 ${durations.toAction}).`);
+    sentences.push(`담당자는 ${t(i.action_at)}에 장애 원인분석 및 조치내역을 등록하였습니다(접수 후 ${durations.toAction}).`);
   sentences.push(
     comments.length > 0
       ? `처리 과정에서 고객과 담당자 간에 총 ${comments.length}건의 의견(고객 ${customerCount}건, 담당자 ${managerCount}건${otherCount ? `, 관리자 ${otherCount}건` : ""})이 오갔습니다.`
       : "처리 과정에서 별도의 의견 교환은 없었습니다.",
   );
   sentences.push(
-    `${i.closed_at}에 고객과 담당자 모두 처리완료를 확인하여 종결되었으며, 총 처리 소요시간은 ${durations.total}입니다.`,
+    `${t(i.closed_at)}에 고객과 담당자 모두 처리완료를 확인하여 종결되었으며, 총 처리 소요시간은 ${durations.total}입니다.`,
   );
 
-  const year = (i.closed_at ?? i.created_at).slice(0, 4);
+  const year = kst(i.closed_at ?? i.created_at).slice(0, 4);
   return {
     reportNo: `RPT-${year}-${String(i.id).padStart(5, "0")}`,
-    generatedAt: i.closed_at ?? "",
+    generatedAt: t(i.closed_at),
     incident: {
       code: i.code,
       title: i.title,
@@ -116,13 +95,13 @@ export function buildReport(incidentId: number): ReportContent {
       severity: i.severity,
       category: i.category,
       targetSystem: dash(i.target_system),
-      occurredAt: dash(i.occurred_at?.replace("T", " ")),
-      createdAt: i.created_at,
-      acknowledgedAt: dash(i.acknowledged_at),
-      actionAt: dash(i.action_at),
-      customerConfirmedAt: dash(i.customer_confirmed_at),
-      managerConfirmedAt: dash(i.manager_confirmed_at),
-      closedAt: dash(i.closed_at),
+      occurredAt: t(i.occurred_at),
+      createdAt: t(i.created_at),
+      acknowledgedAt: t(i.acknowledged_at),
+      actionAt: t(i.action_at),
+      customerConfirmedAt: t(i.customer_confirmed_at),
+      managerConfirmedAt: t(i.manager_confirmed_at),
+      closedAt: t(i.closed_at),
       description: i.description,
       cause: dash(i.cause),
       action: dash(i.action_taken),
@@ -134,45 +113,38 @@ export function buildReport(incidentId: number): ReportContent {
       managerCount,
       otherCount,
       entries: comments.map((c) => ({
-        at: c.created_at,
+        at: t(c.created_at),
         author: c.user_name,
         role: ROLE_LABEL[c.user_role],
         body: c.body,
       })),
     },
     timeline: events.map((e) => ({
-      at: e.created_at,
+      at: t(e.created_at),
       label: EVENT_LABEL[e.type] ?? e.type,
       actor: e.user_name ? `${e.user_name}(${ROLE_LABEL[e.user_role!]})` : "시스템",
       detail: e.detail ?? "",
     })),
-    attachments: attachments.map((a) => ({ name: a.original_name, size: formatSize(a.size), at: a.created_at })),
+    attachments: attachments.map((a) => ({ name: a.original_name, size: formatSize(a.size), at: t(a.created_at) })),
   };
 }
 
-export function saveReport(incidentId: number, content: ReportContent) {
-  db.prepare(
-    `INSERT INTO reports (incident_id, content) VALUES (?, ?)
-     ON CONFLICT(incident_id) DO UPDATE SET content = excluded.content, created_at = datetime('now','localtime')`,
-  ).run(incidentId, JSON.stringify(content));
-}
-
-export function getReport(incidentId: number): ReportContent | null {
-  const row = db.prepare("SELECT content FROM reports WHERE incident_id = ?").get(incidentId) as
-    | { content: string }
-    | undefined;
-  return row ? (JSON.parse(row.content) as ReportContent) : null;
+export async function getReport(incidentId: number): Promise<ReportContent | null> {
+  const row = must(await admin().from("reports").select("content").eq("incident_id", incidentId).maybeSingle()) as {
+    content: ReportContent;
+  } | null;
+  return row?.content ?? null;
 }
 
 // ---------------------------------------------------------------- PDF 렌더링
 
+/** 프로젝트에 포함된 나눔고딕(OFL 라이선스)을 쓴다. Vercel(리눅스)에도 그대로 배포된다. */
 function fontPaths() {
-  const regular = process.env.REPORT_FONT || "C:\\Windows\\Fonts\\malgun.ttf";
-  const bold = process.env.REPORT_FONT_BOLD || "C:\\Windows\\Fonts\\malgunbd.ttf";
-  // 글꼴은 서버 런타임 경로이므로 번들 추적 대상에서 제외한다
-  if (!fs.existsSync(/*turbopackIgnore: true*/ regular))
-    throw new Error(`보고서용 한글 글꼴을 찾을 수 없습니다: ${regular} (.env의 REPORT_FONT로 지정하세요)`);
-  return { regular, bold: fs.existsSync(/*turbopackIgnore: true*/ bold) ? bold : regular };
+  const dir = path.join(process.cwd(), "fonts");
+  const regular = path.join(dir, "NanumGothic-Regular.ttf");
+  const bold = path.join(dir, "NanumGothic-Bold.ttf");
+  if (!fs.existsSync(regular)) throw new Error(`보고서용 한글 글꼴을 찾을 수 없습니다: ${regular}`);
+  return { regular, bold: fs.existsSync(bold) ? bold : regular };
 }
 
 const COLOR = { text: "#1f2937", muted: "#6b7280", line: "#d1d5db", head: "#f3f4f6", accent: "#1d4ed8" };

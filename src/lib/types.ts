@@ -1,15 +1,14 @@
 export type Role = "admin" | "manager" | "customer";
 
 export type User = {
-  id: number;
-  username: string;
+  id: string;
+  email: string;
   name: string;
   role: Role;
   company_id: number | null;
   company_name: string | null;
-  email: string | null;
   phone: string | null;
-  active: number;
+  active: boolean;
 };
 
 export type IncidentStatus = "received" | "in_progress" | "resolved" | "closed";
@@ -19,9 +18,9 @@ export type Incident = {
   code: string;
   company_id: number;
   company_name: string;
-  customer_id: number;
+  customer_id: string;
   customer_name: string;
-  manager_id: number | null;
+  manager_id: string | null;
   manager_name: string | null;
   title: string;
   description: string;
@@ -44,7 +43,7 @@ export type Incident = {
 export type Comment = {
   id: number;
   incident_id: number;
-  user_id: number;
+  user_id: string;
   user_name: string;
   user_role: Role;
   body: string;
@@ -58,14 +57,15 @@ export type Attachment = {
   original_name: string;
   mime_type: string | null;
   size: number;
-  uploaded_by: number;
+  storage_path: string;
+  uploaded_by: string;
   created_at: string;
 };
 
 export type IncidentEvent = {
   id: number;
   incident_id: number;
-  user_id: number | null;
+  user_id: string | null;
   user_name: string | null;
   user_role: Role | null;
   type: string;

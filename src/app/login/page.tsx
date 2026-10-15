@@ -1,10 +1,11 @@
 import { redirect } from "next/navigation";
 import { StateForm, SubmitButton } from "@/components/forms";
 import { login } from "@/lib/actions/auth";
-import { getCurrentUser } from "@/lib/auth";
+import { getCurrentUser, needsSetup } from "@/lib/auth";
 
 export default async function LoginPage() {
   if (await getCurrentUser()) redirect("/");
+  if (await needsSetup()) redirect("/setup");
 
   return (
     <div className="grid min-h-screen place-items-center bg-gradient-to-br from-slate-100 to-blue-50 px-4">
@@ -18,10 +19,10 @@ export default async function LoginPage() {
         </div>
         <StateForm action={login} className="card space-y-4 p-6">
           <div>
-            <label className="label" htmlFor="username">
-              아이디
+            <label className="label" htmlFor="email">
+              이메일
             </label>
-            <input id="username" name="username" className="input" autoComplete="username" required autoFocus />
+            <input id="email" name="email" type="email" className="input" autoComplete="username" required autoFocus />
           </div>
           <div>
             <label className="label" htmlFor="password">

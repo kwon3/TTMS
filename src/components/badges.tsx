@@ -1,3 +1,4 @@
+import { kst } from "@/lib/time";
 import { STATUS_LABEL, type IncidentStatus } from "@/lib/types";
 
 const STATUS_STYLE: Record<IncidentStatus, string> = {
@@ -24,7 +25,5 @@ export function SeverityBadge({ severity }: { severity: string }) {
   return <span className={`${base} ${SEVERITY_STYLE[severity] ?? SEVERITY_STYLE["낮음"]}`}>{severity}</span>;
 }
 
-/** "2026-10-15 13:20:11" → "2026-10-15 13:20" */
-export function dt(v: string | null | undefined) {
-  return v ? v.replace("T", " ").slice(0, 16) : "-";
-}
+/** 한국 시간 "2026-10-15 13:20" */
+export const dt = (v: string | null | undefined) => kst(v);

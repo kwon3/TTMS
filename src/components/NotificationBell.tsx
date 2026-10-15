@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { supabaseBrowser } from "@/lib/supabase/client";
+import { kst } from "@/lib/time";
 import type { Notification } from "@/lib/types";
 
 type Toast = { id: number; message: string; incidentId: number | null };
 
-export default function NotificationBell() {
+export default function NotificationBell({ userId }: { userId: string }) {
   const router = useRouter();
   const [items, setItems] = useState<Notification[]>([]);
   const [unread, setUnread] = useState(0);
@@ -22,20 +24,35 @@ export default function NotificationBell() {
     setUnread(data.unread);
   }, []);
 
-  // 실시간 수신 (SSE). 연결이 끊기면 브라우저가 자동 재연결하고,
-  // 연결(재연결) 직후 오는 ready 이벤트에서 목록을 다시 불러온다.
+  // 실시간 수신: notifications 테이블에 내 알림이 추가되면 Supabase Realtime이 바로 알려준다.
   useEffect(() => {
-    const es = new EventSource("/api/notifications/stream");
-    es.addEventListener("notification", (e) => {
-      const p = JSON.parse((e as MessageEvent).data) as Toast;
-      setToasts((t) => [...t, p]);
-      setTimeout(() => setToasts((t) => t.filter((x) => x.id !== p.id)), 6000);
-      load();
-      router.refresh(); // 보고 있는 화면(목록·상세)을 최신 상태로
+    const supabase = supabaseBrowser();
+    let cancelled = false;
+    const channel = supabase.channel(`notifications:${userId}`).on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${userId}` },
+      (payload) => {
+        const n = payload.new as { id: number; incident_id: number | null; message: string };
+        const toast = { id: n.id, incidentId: n.incident_id, message: n.message };
+        setToasts((t) => [...t, toast]);
+        setTimeout(() => setToasts((t) => t.filter((x) => x.id !== toast.id)), 6000);
+        load();
+        router.refresh(); // 보고 있는 화면(목록·상세)을 최신 상태로
+      },
+    );
+    // 로그인 토큰으로 실시간 연결을 인증한 뒤 구독 (RLS: 자기 알림만 수신)
+    supabase.realtime.setAuth().then(() => {
+      if (!cancelled) channel.subscribe((status) => status === "SUBSCRIBED" && load());
     });
-    es.addEventListener("ready", () => load());
-    return () => es.close();
-  }, [load, router]);
+    // 다른 탭에서 읽음 처리했을 수 있으므로 화면으로 돌아오면 다시 불러온다
+    const onVisible = () => document.visibilityState === "visible" && load();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      supabase.removeChannel(channel);
+    };
+  }, [userId, load, router]);
 
   useEffect(() => {
     const close = (e: MouseEvent) => {
@@ -97,7 +114,7 @@ export default function NotificationBell() {
                   className={`block w-full border-b border-slate-50 px-4 py-3 text-left hover:bg-slate-50 ${n.read_at ? "" : "bg-blue-50/60"}`}
                 >
                   <p className={`text-sm ${n.read_at ? "text-slate-500" : "font-medium text-slate-800"}`}>{n.message}</p>
-                  <p className="mt-1 text-xs text-slate-400">{n.created_at.slice(0, 16)}</p>
+                  <p className="mt-1 text-xs text-slate-400">{kst(n.created_at)}</p>
                 </button>
               </li>
             ))}

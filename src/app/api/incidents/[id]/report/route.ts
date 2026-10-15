@@ -7,8 +7,8 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/incidents/[id]/
   const user = await getCurrentUser();
   if (!user) return new Response("unauthorized", { status: 401 });
   const { id } = await ctx.params;
-  const incident = getIncidentFor(user, Number(id));
-  const report = incident && getReport(incident.id);
+  const incident = await getIncidentFor(user, Number(id));
+  const report = incident && (await getReport(incident.id));
   if (!incident || !report) return new Response("보고서가 없습니다.", { status: 404 });
 
   try {

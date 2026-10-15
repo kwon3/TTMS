@@ -11,22 +11,16 @@ export default async function ProfilePage() {
 
       <StateForm action={updateProfile} className="card space-y-4 p-6">
         <p className="text-sm text-slate-500">
-          아이디 <b className="text-slate-800">{user.username}</b> · {ROLE_LABEL[user.role]}
+          <b className="text-slate-800">{user.email}</b> · {ROLE_LABEL[user.role]}
           {user.company_name ? ` · ${user.company_name}` : ""}
         </p>
         <div>
           <label className="label">이름</label>
           <input name="name" defaultValue={user.name} className="input" required />
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div>
-            <label className="label">이메일</label>
-            <input name="email" type="email" defaultValue={user.email ?? ""} className="input" />
-          </div>
-          <div>
-            <label className="label">연락처</label>
-            <input name="phone" defaultValue={user.phone ?? ""} className="input" />
-          </div>
+        <div>
+          <label className="label">연락처</label>
+          <input name="phone" defaultValue={user.phone ?? ""} className="input" />
         </div>
         <div className="flex justify-end">
           <SubmitButton>저장</SubmitButton>

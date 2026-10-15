@@ -1,26 +1,27 @@
 import { StateForm, SubmitButton } from "@/components/forms";
 import { createCompany, setCompanyManager } from "@/lib/actions/admin";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { listActiveManagers } from "@/lib/incidents";
+import { admin, must } from "@/lib/supabase/server";
 
 type Row = {
   id: number;
   name: string;
-  manager_id: number | null;
+  manager_id: string | null;
   customers: number;
   open_incidents: number;
   total_incidents: number;
 };
 
-type Manager = { id: number; name: string; username: string };
+type Manager = { id: string; name: string; email: string };
 
-function ManagerSelect({ managers, value }: { managers: Manager[]; value?: number | null }) {
+function ManagerSelect({ managers, value }: { managers: Manager[]; value?: string | null }) {
   return (
     <select name="manager_id" defaultValue={value ?? ""} className="input py-1.5">
       <option value="">(미지정)</option>
       {managers.map((m) => (
         <option key={m.id} value={m.id}>
-          {m.name} ({m.username})
+          {m.name} ({m.email})
         </option>
       ))}
     </select>
@@ -29,18 +30,22 @@ function ManagerSelect({ managers, value }: { managers: Manager[]; value?: numbe
 
 export default async function CompaniesPage() {
   await requireUser("admin");
-  const managers = db
-    .prepare("SELECT id, name, username FROM users WHERE role = 'manager' AND active = 1 ORDER BY name")
-    .all() as Manager[];
-  const companies = db
-    .prepare(
-      `SELECT c.id, c.name, c.manager_id,
-              (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.role = 'customer') AS customers,
-              (SELECT COUNT(*) FROM incidents i WHERE i.company_id = c.id AND i.status <> 'closed') AS open_incidents,
-              (SELECT COUNT(*) FROM incidents i WHERE i.company_id = c.id) AS total_incidents
-         FROM companies c ORDER BY c.name`,
-    )
-    .all() as Row[];
+  const [managers, companyRows, customers, incidents] = await Promise.all([
+    listActiveManagers(),
+    admin().from("companies").select("id, name, manager_id").order("name"),
+    admin().from("profiles").select("company_id").eq("role", "customer"),
+    admin().from("incidents").select("company_id, status"),
+  ]);
+  const custRows = must(customers) as { company_id: number | null }[];
+  const incRows = must(incidents) as { company_id: number; status: string }[];
+  const companies: Row[] = (must(companyRows) as Omit<Row, "customers" | "open_incidents" | "total_incidents">[]).map(
+    (c) => ({
+      ...c,
+      customers: custRows.filter((u) => u.company_id === c.id).length,
+      open_incidents: incRows.filter((i) => i.company_id === c.id && i.status !== "closed").length,
+      total_incidents: incRows.filter((i) => i.company_id === c.id).length,
+    }),
+  );
 
   return (
     <div className="space-y-6">

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { dt, SeverityBadge, StatusBadge } from "@/components/badges";
+import AttachmentInput from "@/components/AttachmentInput";
 import { StateForm, SubmitButton } from "@/components/forms";
 import {
   acknowledgeIncident,
@@ -10,9 +11,15 @@ import {
   saveAction,
 } from "@/lib/actions/incidents";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
-import { EVENT_LABEL, getAttachments, getComments, getEvents, getIncidentFor } from "@/lib/incidents";
-import { formatSize } from "@/lib/report";
+import {
+  EVENT_LABEL,
+  getAttachments,
+  getComments,
+  getEvents,
+  getIncidentFor,
+  listActiveManagers,
+} from "@/lib/incidents";
+import { formatSize } from "@/lib/time";
 import { ROLE_LABEL, type Attachment, type Incident, type User } from "@/lib/types";
 
 const STEPS = [
@@ -106,28 +113,21 @@ function Info({ label, children }: { label: string; children: React.ReactNode })
   );
 }
 
-const fileInputClass =
-  "block w-full text-xs text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-xs hover:file:bg-slate-200";
-
 export default async function IncidentPage({ params }: PageProps<"/incidents/[id]">) {
   const user = await requireUser();
   const { id } = await params;
-  const incident = getIncidentFor(user, Number(id));
+  const incident = await getIncidentFor(user, Number(id));
   if (!incident) notFound();
 
-  const comments = getComments(incident.id);
-  const attachments = getAttachments(incident.id);
-  const events = getEvents(incident.id);
+  const [comments, attachments, events, managers] = await Promise.all([
+    getComments(incident.id),
+    getAttachments(incident.id),
+    getEvents(incident.id),
+    user.role === "admin" ? listActiveManagers() : Promise.resolve([]),
+  ]);
   const closed = incident.status === "closed";
   const isHandler = user.role === "admin" || (user.role === "manager" && incident.manager_id === user.id);
   const step = nextStep(user, incident);
-  const managers =
-    user.role === "admin"
-      ? (db.prepare("SELECT id, name FROM users WHERE role = 'manager' AND active = 1 ORDER BY name").all() as {
-          id: number;
-          name: string;
-        }[])
-      : [];
 
   return (
     <div className="space-y-5">
@@ -223,7 +223,7 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                       />
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <input name="files" type="file" multiple className={`${fileInputClass} max-w-xs`} />
+                      <AttachmentInput className="max-w-sm" />
                       <SubmitButton
                         confirm={
                           incident.customer_confirmed_at || incident.manager_confirmed_at
@@ -294,7 +294,7 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                   placeholder={user.role === "customer" ? "담당자에게 문의·추가 정보를 남기세요." : "고객에게 안내·질문을 남기세요."}
                 />
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
-                  <input name="files" type="file" multiple className={`${fileInputClass} max-w-xs`} />
+                  <AttachmentInput className="max-w-sm" />
                   <SubmitButton className="btn-secondary">댓글 등록</SubmitButton>
                 </div>
               </StateForm>

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { formatDuration } from "@/lib/report";
+import { formatDuration } from "@/lib/time";
 import type { Incident } from "@/lib/types";
 import { dt, SeverityBadge, StatusBadge } from "./badges";
 

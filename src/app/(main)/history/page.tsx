@@ -6,7 +6,7 @@ export default async function HistoryPage({ searchParams }: PageProps<"/history"
   const user = await requireUser();
   const sp = await searchParams;
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
-  const incidents = listIncidents(user, { closed: true, q });
+  const incidents = await listIncidents(user, { closed: true, q });
 
   return (
     <div className="space-y-6">

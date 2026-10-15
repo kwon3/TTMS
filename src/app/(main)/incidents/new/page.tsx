@@ -1,15 +1,20 @@
+import AttachmentInput from "@/components/AttachmentInput";
 import { StateForm, SubmitButton } from "@/components/forms";
 import { createIncident } from "@/lib/actions/incidents";
 import { requireUser } from "@/lib/auth";
-import { db } from "@/lib/db";
+import { admin } from "@/lib/supabase/server";
 import { CATEGORIES, SEVERITIES } from "@/lib/types";
 
 export default async function NewIncidentPage() {
   const user = await requireUser("customer");
   const company = user.company_id
-    ? (db
-        .prepare("SELECT c.name, m.name AS manager_name FROM companies c LEFT JOIN users m ON m.id = c.manager_id WHERE c.id = ?")
-        .get(user.company_id) as { name: string; manager_name: string | null })
+    ? (
+        await admin()
+          .from("companies")
+          .select("name, manager:profiles!companies_manager_id_fkey(name)")
+          .eq("id", user.company_id)
+          .maybeSingle<{ name: string; manager: { name: string } | null }>()
+      ).data
     : null;
 
   return (
@@ -17,7 +22,7 @@ export default async function NewIncidentPage() {
       <div>
         <h1 className="text-xl font-bold text-slate-900">장애 접수</h1>
         <p className="text-sm text-slate-500">
-          접수하면 {company?.manager_name ? `담당자(${company.manager_name})` : "담당자"}에게 바로 알림이 전송됩니다.
+          접수하면 {company?.manager ? `담당자(${company.manager.name})` : "담당자"}에게 바로 알림이 전송됩니다.
         </p>
       </div>
 
@@ -85,16 +90,8 @@ export default async function NewIncidentPage() {
         </div>
 
         <div>
-          <label className="label" htmlFor="files">
-            첨부파일 (스크린샷·로그 등, 파일당 10MB · 최대 5개)
-          </label>
-          <input
-            id="files"
-            name="files"
-            type="file"
-            multiple
-            className="block w-full text-sm text-slate-600 file:mr-3 file:rounded-lg file:border-0 file:bg-slate-100 file:px-3 file:py-2 file:text-sm hover:file:bg-slate-200"
-          />
+          <span className="label">첨부파일 (스크린샷·로그 등)</span>
+          <AttachmentInput />
         </div>
 
         <div className="flex justify-end border-t border-slate-100 pt-4">

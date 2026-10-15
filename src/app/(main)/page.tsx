@@ -33,8 +33,10 @@ export default async function Dashboard({ searchParams }: PageProps<"/">) {
   const status = typeof sp.status === "string" && sp.status in STATUS_LABEL ? sp.status : "";
   const q = typeof sp.q === "string" ? sp.q.trim() : "";
 
-  const counts = countByStatus(user);
-  const incidents = listIncidents(user, status ? { status, q } : { closed: false, q });
+  const [counts, incidents] = await Promise.all([
+    countByStatus(user),
+    listIncidents(user, status ? { status, q } : { closed: false, q }),
+  ]);
 
   return (
     <div className="space-y-6">
