@@ -76,10 +76,19 @@ export async function buildReport(incidentId: number): Promise<ReportContent> {
     `본 장애는 ${t(i.created_at)}에 ${i.company_name}의 ${i.customer_name} 고객이 '${i.title}' 건으로 접수하였습니다` +
       (i.target_system ? ` (대상 시스템: ${i.target_system}, 긴급도: ${i.severity}).` : ` (긴급도: ${i.severity}).`),
   ];
+  // 실제로 처리한 사람 이름은 처리 경과 기록에서 가져온다 (배정 담당자와 다를 수 있음)
+  const actor = (types: string[]) => {
+    const e = events.find((ev) => types.includes(ev.type) && ev.user_name);
+    return e ? `${e.user_name}(${ROLE_LABEL[e.user_role!]})` : null;
+  };
+  const ackBy = actor(["acknowledged"]) ?? `${dash(i.manager_name)}(담당자)`;
+  const actionBy = i.action_by_name ?? actor(["action"])?.replace(/(.+)$/, "") ?? null;
   if (i.acknowledged_at)
-    sentences.push(`${dash(i.manager_name)} 담당자가 ${t(i.acknowledged_at)}에 접수를 확인하였습니다(접수 후 ${durations.toAcknowledge}).`);
+    sentences.push(`${ackBy}이(가) ${t(i.acknowledged_at)}에 접수를 확인하였습니다(접수 후 ${durations.toAcknowledge}).`);
   if (i.action_at)
-    sentences.push(`담당자는 ${t(i.action_at)}에 장애 원인분석 및 조치내역을 등록하였습니다(접수 후 ${durations.toAction}).`);
+    sentences.push(
+      `${actionBy ?? "담당자"}이(가) ${t(i.action_at)}에 장애 원인분석 및 조치내역을 등록하였습니다(접수 후 ${durations.toAction}).`,
+    );
   sentences.push(
     comments.length > 0
       ? `처리 과정에서 고객과 담당자 간에 총 ${comments.length}건의 의견(고객 ${customerCount}건, 담당자 ${managerCount}건${otherCount ? `, 관리자 ${otherCount}건` : ""})이 오갔습니다.`
@@ -117,7 +126,7 @@ export async function buildReport(incidentId: number): Promise<ReportContent> {
       managerConfirmedBy: i.manager_confirmed_by_name
         ? `${i.manager_confirmed_by_name}${managerProxy ? " (관리자 대리)" : ""}`
         : "-",
-      actionBy: dash(i.action_by_name),
+      actionBy: dash(actionBy),
       closeMethod: adminClosed ? `관리자 강제 종결 (${dash(i.closed_by_name)})` : "고객·담당자 처리완료 확인",
       description: i.description,
       cause: dash(i.cause),
@@ -207,7 +216,7 @@ export function renderReportPdf(r: ReportContent): Promise<Buffer> {
 
   let sectionNo = 0;
   const section = (title: string) => {
-    ensure(40);
+    ensure(90); // 제목만 쪽 끝에 홀로 남지 않도록 본문 몇 줄 들어갈 공간을 확보
     doc.moveDown(0.6);
     sectionNo += 1;
     const y = doc.y;
@@ -263,7 +272,7 @@ export function renderReportPdf(r: ReportContent): Promise<Buffer> {
       ["접수자(고객)", i.customer, "담당자", i.manager],
       ["장애 발생일시", i.occurredAt, "접수일시", i.createdAt],
       ["담당자 확인일시", i.acknowledgedAt, "조치 등록일시", i.actionAt],
-      ["조치 등록자", i.actionBy ?? "-", "", ""],
+      ["조치 등록자", i.actionBy ?? "-", "종결 방식", i.closeMethod ?? "고객·담당자 처리완료 확인"],
       ["종결일시", i.closedAt, "총 처리시간", r.durations.total],
     ],
     { labelCols: [0, 2] },

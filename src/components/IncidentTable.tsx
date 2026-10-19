@@ -49,7 +49,7 @@ export default function IncidentTable({ incidents, history = false }: { incident
               <td>
                 <SeverityBadge severity={i.severity} />
               </td>
-              <td className="max-w-80">
+              <td className="min-w-56 max-w-96">
                 <Link href={`/incidents/${i.id}`} className="line-clamp-1 font-medium text-slate-800 hover:text-blue-600">
                   {i.title}
                 </Link>

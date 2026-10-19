@@ -68,7 +68,13 @@ function nextStep(user: User, i: Incident, designated: boolean): { text: string;
       if (notMine)
         return { text: "이 고객사의 지정 담당자가 아닙니다. 댓글과 원인·조치내역은 작성할 수 있지만 접수 확인·처리완료는 지정 담당자만 할 수 있습니다.", tone: "info" };
       return isMgr || user.role === "admin"
-        ? { text: "새로 접수된 장애입니다. '접수 확인'을 누르면 이 건의 담당자가 되고 고객사에 알림이 갑니다.", tone: "todo" }
+        ? {
+            text:
+              isMgr && !i.manager_id
+                ? "새로 접수된 장애입니다. '접수 확인'을 누르면 이 건의 담당자가 되고 고객사에 알림이 갑니다."
+                : "새로 접수된 장애입니다. '접수 확인'을 누르면 고객사에 처리 시작 알림이 갑니다.",
+            tone: "todo",
+          }
         : { text: "담당자의 접수 확인을 기다리고 있습니다.", tone: "info" };
     case "in_progress":
       return isMgr
@@ -102,8 +108,35 @@ function nextStep(user: User, i: Incident, designated: boolean): { text: string;
   }
 }
 
+const isImage = (f: Attachment) => Boolean(f.mime_type?.startsWith("image/") && f.mime_type !== "image/svg+xml");
+
 function Files({ files }: { files: Attachment[] }) {
   if (files.length === 0) return null;
+  const images = files.filter(isImage);
+  return (
+    <>
+      {images.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {images.map((f) => (
+            <a key={f.id} href={`/api/files/${f.id}`} target="_blank" title={f.original_name}>
+              {/* 스크린샷 미리보기 (클릭하면 원본) */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={`/api/files/${f.id}`}
+                alt={f.original_name}
+                loading="lazy"
+                className="h-28 w-auto max-w-56 rounded-lg border border-slate-200 object-cover hover:border-blue-400"
+              />
+            </a>
+          ))}
+        </div>
+      )}
+      <FileLinks files={files} />
+    </>
+  );
+}
+
+function FileLinks({ files }: { files: Attachment[] }) {
   return (
     <ul className="mt-3 flex flex-wrap gap-2">
       {files.map((f) => (
@@ -215,16 +248,21 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                   {incident.status === "received" && designated && (
                     <form action={acknowledgeIncident} className="flex items-center justify-between gap-3 rounded-lg bg-slate-50 p-3">
                       <input type="hidden" name="id" value={incident.id} />
-                      <p className="text-sm text-slate-600">접수를 확인하면 이 건의 담당자가 되고 고객사에 처리 시작 알림이 갑니다.</p>
+                      <p className="text-sm text-slate-600">
+                        {user.role === "manager" && !incident.manager_id
+                          ? "접수를 확인하면 이 건의 담당자가 되고 고객사에 처리 시작 알림이 갑니다."
+                          : "접수를 확인하면 고객사에 처리 시작 알림이 갑니다."}
+                      </p>
                       <SubmitButton
                         className="btn-secondary shrink-0"
+                        confirmTitle="접수 확인"
                         confirm={`접수 확인을 누르면 고객사(${incident.company_name})에 처리 시작 알림이 갑니다.${user.role === "manager" && !incident.manager_id ? "\n이 건의 담당자로 배정됩니다." : ""}`}
                       >
                         접수 확인
                       </SubmitButton>
                     </form>
                   )}
-                  <StateForm key={incident.updated_at} action={saveAction} className="space-y-3">
+                  <StateForm action={saveAction} className="space-y-3">
                     <input type="hidden" name="id" value={incident.id} />
                     <div>
                       <label className="label" htmlFor="cause">
@@ -255,6 +293,7 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <AttachmentInput className="max-w-sm" />
                       <SubmitButton
+                        confirmTitle={incident.action_at ? "조치내역 수정" : "조치내역 등록"}
                         confirm={`${incident.action_at ? "조치내역을 수정" : "조치내역을 등록"}하면 고객사(${incident.company_name})에 알림이 갑니다.${
                           incident.customer_confirmed_at || incident.manager_confirmed_at
                             ? "\n이미 누른 처리완료 확인은 초기화되어 다시 확인을 받아야 합니다."
@@ -327,6 +366,7 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                   <AttachmentInput className="max-w-sm" />
                   <SubmitButton
                     className="btn-secondary"
+                    confirmTitle="댓글 등록"
                     confirm={
                       user.role === "customer"
                         ? `댓글을 등록하면 담당자(${incident.manager_name ?? designatedNames})에게 알림이 갑니다.`
@@ -389,8 +429,7 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                     </>
                   ) : (
                     <>
-                      종결 · {incident.closed_by_name ? `${incident.closed_by_name} 확인으로 완료 · ` : ""}
-                      {dt(incident.closed_at)}
+                      고객·담당자 처리완료 확인으로 종결 · {dt(incident.closed_at)}
                     </>
                   )}
                 </div>
@@ -406,9 +445,15 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                       confirmTitle="처리완료"
                       confirm={
                         user.role === "customer"
-                          ? `처리완료를 누르면 담당자(${incident.manager_name ?? designatedNames})에게 알림이 갑니다.
+                          ? incident.manager_confirmed_at
+                            ? `담당자는 이미 처리완료를 확인했습니다.
+처리완료를 누르면 바로 종결되고 보고서가 생성되며, 담당자(${incident.manager_name ?? designatedNames})에게 알림이 갑니다.`
+                            : `처리완료를 누르면 담당자(${incident.manager_name ?? designatedNames})에게 알림이 갑니다.
 담당자도 처리완료를 누르면 종결되고 보고서가 생성됩니다.`
-                          : `처리완료를 누르면 고객사(${incident.company_name})에 알림이 갑니다.
+                          : incident.customer_confirmed_at
+                            ? `고객은 이미 처리완료를 확인했습니다.
+처리완료를 누르면 바로 종결되고 보고서가 생성되며, 고객사(${incident.company_name})에 알림이 갑니다.`
+                            : `처리완료를 누르면 고객사(${incident.company_name})에 알림이 갑니다.
 고객도 처리완료를 누르면 종결되고 보고서가 생성됩니다.`
                       }
                     >
@@ -423,8 +468,13 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                   <SubmitButton
                     className="btn-success w-full py-2.5"
                     confirmTitle="담당자 대신 처리완료"
-                    confirm={`담당자 대신 처리완료를 확인합니다. 고객사(${incident.company_name})와 담당자에게 알림이 갑니다.
-고객도 처리완료를 누르면 종결됩니다.`}
+                    confirm={
+                      incident.customer_confirmed_at
+                        ? `담당자 대신 처리완료를 확인합니다. 고객은 이미 확인했으므로 바로 종결되고 보고서가 생성됩니다.
+고객사(${incident.company_name})와 담당자에게 알림이 갑니다.`
+                        : `담당자 대신 처리완료를 확인합니다. 고객사(${incident.company_name})와 담당자에게 알림이 갑니다.
+고객도 처리완료를 누르면 종결됩니다.`
+                    }
                   >
                     ✓ 담당자 대신 처리완료
                   </SubmitButton>
@@ -495,6 +545,7 @@ export default async function IncidentPage({ params }: PageProps<"/incidents/[id
                 </select>
                 <SubmitButton
                   className="btn-secondary btn-sm shrink-0"
+                  confirmTitle="담당자 배정"
                   confirm="배정하면 새 담당자와 고객사에 알림이 갑니다."
                 >
                   배정

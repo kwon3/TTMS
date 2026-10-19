@@ -13,7 +13,7 @@ export default async function HistoryPage({ searchParams }: PageProps<"/history"
       <div>
         <h1 className="text-xl font-bold text-slate-900">장애 이력·보고서</h1>
         <p className="text-sm text-slate-500">
-          고객과 담당자가 모두 처리완료를 확인한 건입니다. 보고서는 종결 시점 기록으로 자동 작성되었습니다.
+          처리완료(고객·담당자 확인 또는 관리자 종결)된 건입니다. 보고서는 종결 시점 기록으로 자동 작성되었습니다.
         </p>
       </div>
       <section className="card">

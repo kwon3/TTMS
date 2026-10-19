@@ -111,3 +111,26 @@ export async function resetPassword(_prev: FormState, fd: FormData): Promise<For
   if (error) return { error: `재설정하지 못했습니다: ${error.message}` };
   return { ok: "비밀번호를 재설정했습니다." };
 }
+
+/** 계정 정보 수정 (이름·연락처, 고객이면 소속 고객사) */
+export async function updateUser(_prev: FormState, fd: FormData): Promise<FormState> {
+  await requireUser("admin");
+  const id = str(fd, "id");
+  const name = str(fd, "name");
+  if (!id || !name) return { error: "이름을 입력하세요." };
+  const row = must(await admin().from("profiles").select("role").eq("id", id).single()) as { role: string };
+  const companyId = Number(fd.get("company_id")) || null;
+  if (row.role === "customer" && !companyId) return { error: "고객 계정은 소속 고객사를 선택해야 합니다." };
+  must(
+    await admin()
+      .from("profiles")
+      .update({
+        name,
+        phone: str(fd, "phone") || null,
+        ...(row.role === "customer" ? { company_id: companyId } : {}),
+      })
+      .eq("id", id),
+  );
+  revalidatePath("/admin/users");
+  return { ok: "저장했습니다." };
+}

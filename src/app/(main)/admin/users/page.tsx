@@ -1,11 +1,12 @@
 import { StateForm, SubmitButton } from "@/components/forms";
-import { createUser, resetPassword, toggleUserActive } from "@/lib/actions/admin";
+import { createUser, resetPassword, toggleUserActive, updateUser } from "@/lib/actions/admin";
 import { requireUser } from "@/lib/auth";
 import { admin, must } from "@/lib/supabase/server";
 import { ROLE_LABEL, type Role } from "@/lib/types";
 
 type Row = {
   id: string;
+  company_id: number | null;
   name: string;
   role: Role;
   company: { name: string } | null;
@@ -18,11 +19,22 @@ const ROLE_ORDER: Record<Role, number> = { admin: 0, manager: 1, customer: 2 };
 
 export default async function UsersPage() {
   const me = await requireUser("admin");
-  const [companyRes, userRes] = await Promise.all([
+  const [companyRes, userRes, linkRes] = await Promise.all([
     admin().from("companies").select("id, name").order("name"),
-    admin().from("profiles").select("id, name, role, email, phone, active, company:companies!profiles_company_fk(name)"),
+    admin()
+      .from("profiles")
+      .select("id, name, role, email, phone, active, company_id, company:companies!profiles_company_fk(name)"),
+    admin().from("company_managers").select("company_id, manager_id"),
   ]);
   const companies = must(companyRes) as { id: number; name: string }[];
+  const links = must(linkRes) as { company_id: number; manager_id: string }[];
+  // 담당자는 지정된 고객사 목록을 보여준다
+  const designated = (managerId: string) =>
+    links
+      .filter((l) => l.manager_id === managerId)
+      .map((l) => companies.find((c) => c.id === l.company_id)?.name)
+      .filter(Boolean)
+      .join(", ");
   const users = (must(userRes) as unknown as Row[]).sort(
     (a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.name.localeCompare(b.name, "ko"),
   );
@@ -85,7 +97,7 @@ export default async function UsersPage() {
               <th>이름</th>
               <th>이메일 (아이디)</th>
               <th>역할</th>
-              <th>고객사</th>
+              <th>고객사 / 지정 고객사</th>
               <th>연락처</th>
               <th>상태</th>
               <th>관리</th>
@@ -97,17 +109,59 @@ export default async function UsersPage() {
                 <td className="font-medium">{u.name}</td>
                 <td className="text-xs">{u.email}</td>
                 <td>{ROLE_LABEL[u.role]}</td>
-                <td>{u.company?.name ?? "-"}</td>
-                <td className="text-xs text-slate-500">
-{u.phone ?? "-"}
+                <td className="text-xs">
+                  {u.role === "manager" ? designated(u.id) || <span className="text-slate-400">지정 없음</span> : (u.company?.name ?? "-")}
                 </td>
+                <td className="text-xs text-slate-500">{u.phone ?? "-"}</td>
                 <td>{u.active ? <span className="text-emerald-600">사용</span> : <span className="text-red-500">중지</span>}</td>
                 <td>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <details className="relative">
+                      <summary className="btn-secondary btn-sm cursor-pointer list-none">정보 수정</summary>
+                      <StateForm
+                        action={updateUser}
+                        className="absolute right-0 z-10 mt-1 w-72 space-y-2 rounded-lg border border-slate-200 bg-white p-3 shadow-lg"
+                      >
+                        <input type="hidden" name="id" value={u.id} />
+                        <label className="label">이름</label>
+                        <input name="name" defaultValue={u.name} required className="input py-1.5" />
+                        <label className="label">연락처</label>
+                        <input name="phone" defaultValue={u.phone ?? ""} className="input py-1.5" />
+                        {u.role === "customer" && (
+                          <>
+                            <label className="label">소속 고객사</label>
+                            <select name="company_id" defaultValue={u.company_id ?? ""} className="input py-1.5" required>
+                              <option value="">선택</option>
+                              {companies.map((c) => (
+                                <option key={c.id} value={c.id}>
+                                  {c.name}
+                                </option>
+                              ))}
+                            </select>
+                          </>
+                        )}
+                        {u.role === "manager" && (
+                          <p className="text-xs text-slate-400">지정 고객사는 고객사·담당자 화면에서 바꿉니다.</p>
+                        )}
+                        <SubmitButton className="btn-primary btn-sm w-full">저장</SubmitButton>
+                      </StateForm>
+                    </details>
                   {u.id !== me.id && (
-                    <div className="flex flex-wrap items-center gap-2">
+                    <>
                       <form action={toggleUserActive}>
                         <input type="hidden" name="id" value={u.id} />
-                        <SubmitButton className="btn-secondary btn-sm">{u.active ? "사용 중지" : "다시 사용"}</SubmitButton>
+                        <SubmitButton
+                          className="btn-secondary btn-sm"
+                          confirmTitle={u.active ? "사용 중지" : "다시 사용"}
+                          confirm={
+                            u.active
+                              ? `${u.name}(${u.email}) 계정을 사용 중지합니다.
+이 계정으로는 로그인할 수 없게 됩니다.`
+                              : `${u.name}(${u.email}) 계정을 다시 사용할 수 있게 합니다.`
+                          }
+                        >
+                          {u.active ? "사용 중지" : "다시 사용"}
+                        </SubmitButton>
                       </form>
                       <details className="relative">
                         <summary className="btn-secondary btn-sm cursor-pointer list-none">비밀번호 재설정</summary>
@@ -126,11 +180,19 @@ export default async function UsersPage() {
                             className="input mb-2 py-1.5"
                             autoComplete="new-password"
                           />
-                          <SubmitButton className="btn-primary btn-sm w-full">재설정</SubmitButton>
+                          <SubmitButton
+                            className="btn-primary btn-sm w-full"
+                            confirmTitle="비밀번호 재설정"
+                            confirm={`${u.name} 계정의 비밀번호를 입력한 값으로 바꿉니다.
+새 비밀번호는 본인에게 따로 알려주세요.`}
+                          >
+                            재설정
+                          </SubmitButton>
                         </StateForm>
                       </details>
-                    </div>
+                    </>
                   )}
+                  </div>
                 </td>
               </tr>
             ))}
